@@ -226,7 +226,9 @@ class ExactCfaCalibrationTests(unittest.TestCase):
         session, path, before = self.make_manifest(cfa=(2, 1, 1, 0))
         with installed_physical():
             result = session.calibrate(path, 9.0, 999.0, 99.0)
-        self.assertEqual(result, path)
+        # Windows CI may expose TEMP through an 8.3 alias (RUNNER~1).
+        # The calibration API returns the canonical, resolved manifest path.
+        self.assertEqual(result, path.resolve())
         document = json.loads(path.read_text(encoding="utf-8"))
         self.assertNotIn("developer_calibration", document)
         self.assertFalse(document["cfa_calibration"]["noise_averaged"])
