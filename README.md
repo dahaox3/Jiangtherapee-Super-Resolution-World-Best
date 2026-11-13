@@ -1,3 +1,14 @@
+# 本 fork：JSR 主摄助手
+
+为 iQOO 12 Pro 的 1× 主摄新增简单入口：**选择七张 DNG → 自动读取三参数与曝光 → 合成并打开输出目录**。
+同一组七张须保持相同 ISO、快门；不同组可以换设置，参数会重新计算。
+
+[下载 Windows 主摄助手](https://github.com/dahaox3/Jiangtherapee-Super-Resolution-World-Best/releases/tag/easy-v0.1.0) · [使用与构建说明](EASY-START.md) · [新增源码](iqoo_easy) · [组件与许可](NOTICE-EASY.md)
+
+本入口调用用户已安装的官方 JSR V18.3.1 引擎。当前上游未公开完整桌面程序源码，助手下载包不附带重建引擎或模型。
+
+---
+
 # Jiangtherapee Super Resolution 注意下文是v9.8的不是最新的v17，新版改善很多但是因为没钱了我没法训练7和14之外的张数适配
 
 https://github.com/y-g-jiang/Support_Me_QR_Code

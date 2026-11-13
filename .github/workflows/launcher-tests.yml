@@ -1,0 +1,24 @@
+name: JSR Easy tests
+on:
+  push:
+    paths: ["iqoo_easy/**", "tests/**", "launch_iqoo.py", ".github/workflows/launcher-tests.yml"]
+  pull_request:
+    paths: ["iqoo_easy/**", "tests/**", "launch_iqoo.py", ".github/workflows/launcher-tests.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            iqoo_easy
+            tests
+            launch_iqoo.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
