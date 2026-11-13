@@ -26,7 +26,7 @@ class GuiStateTests(unittest.TestCase):
         for item in self.patches:
             item.start()
         self.app = gui.Application(self.root)
-        self.calibration = SimpleNamespace(iso=400, shutter_seconds=0.02, read_noise_dn=1.2039, black_dn=64.0, fullwell_e=2368.35)
+        self.calibration = SimpleNamespace(iso=400, shutter_seconds=0.02, read_noise_dn=1.2039, black_dn=64.0, fullwell_e=2368.35, black_level_note="")
 
     def tearDown(self):
         if not hasattr(self, "app"):
@@ -73,6 +73,14 @@ class GuiStateTests(unittest.TestCase):
         self.assertIn("1/50", self.app.camera_var.get())
         self.assertIn("2368", self.app.parameters_var.get())
         self.assertEqual(str(self.app.start_button["state"]), "normal")
+
+    def test_fractional_black_approximation_is_visible(self):
+        self.calibration.black_dn = 64.03
+        self.calibration.black_level_note = "黑电平采用通道均值近似，各通道最大偏差 0.03 DN。"
+        self.ready()
+        self.assertIn("64.03", self.app.parameters_var.get())
+        self.assertIn("均值近似", self.app.parameters_var.get())
+        self.assertIn("0.03 DN", self.app.parameters_var.get())
 
     def test_cancel_waits_for_worker_and_restores_controls(self):
         self.ready()

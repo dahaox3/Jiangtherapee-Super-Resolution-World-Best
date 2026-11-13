@@ -23,7 +23,7 @@ def make_fixture(path, *, order="<", changes=None, nested=False, exif=False, mar
         254: (4, (0,)), 256: (4, (4096,)), 257: (4, (3072,)),
         258: (3, (16,)), 262: (3, (32803,)), 277: (3, (1,)),
         33421: (3, (2, 2)), 33422: (1, (0, 1, 1, 2)),
-        50714: (5, ((64, 1),) * 4), 50717: (4, (1023,)),
+        50713: (3, (2, 2)), 50714: (5, ((64, 1),) * 4), 50717: (4, (1023,)),
         51041: (12, (SLOPE, OFFSET) * 3),
     }
     raw.update(capture)
@@ -170,6 +170,44 @@ class DNGTests(unittest.TestCase):
         for levels in (((64, 1), (65, 1)), ((1023, 1),), ((1024, 1),)):
             with self.subTest(levels=levels), self.assertRaises(ValidationError):
                 read_metadata(self.fixture(changes={50714: (5, levels)}))
+
+    def test_fractional_black_levels_use_bounded_mean_without_changing_input(self):
+        levels = ((6406, 100), (64, 1), (64, 1), (6406, 100))
+        paths = self.batch(changes={50714: (5, levels)})
+        before = [p.read_bytes() for p in paths]
+        c = validate_burst(paths)
+        self.assertAlmostEqual(c.black_dn, 64.03)
+        self.assertEqual(c.frames[0].black_levels_dn, (64.06, 64, 64, 64.06))
+        self.assertAlmostEqual(c.frames[0].black_level_max_error_dn, 0.03)
+        self.assertAlmostEqual(c.read_noise_dn, (1023 - 64.03) * math.sqrt(OFFSET))
+        self.assertIn("均值近似", c.black_level_note)
+        self.assertIn("0.03", c.black_level_note)
+        self.assertEqual(c.to_dict()["frames"][0]["black_levels_dn"], [64.06, 64, 64, 64.06])
+        self.assertEqual(before, [p.read_bytes() for p in paths])
+
+    def test_black_approximation_requires_both_dn_and_noise_bounds(self):
+        cases = (
+            {50714: (5, ((6411, 100), (64, 1), (64, 1), (6411, 100)))},
+            {50714: (5, ((6406, 100), (64, 1), (64, 1), (6406, 100))),
+             51041: (12, (SLOPE, 1e-9) * 3)},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValidationError, "微差适配"):
+                read_metadata(self.fixture(changes=changes))
+
+    def test_equal_black_scalar_and_invalid_repeat_geometry(self):
+        m = read_metadata(self.fixture(changes={50713: None, 50714: (5, ((64, 1),))}))
+        self.assertEqual(m.black_dn, 64)
+        self.assertEqual(m.black_level_max_error_dn, 0)
+        for dimensions in ((1, 1), (1, 4), (4, 1)):
+            with self.subTest(dimensions=dimensions), self.assertRaisesRegex(ValidationError, "排列"):
+                read_metadata(self.fixture(changes={50713: (3, dimensions)}))
+
+    def test_same_mean_but_different_black_pattern_is_rejected(self):
+        paths = self.batch(changes={50714: (5, ((6406, 100), (64, 1), (64, 1), (6406, 100)))})
+        make_fixture(paths[4], changes={50714: (5, ((64, 1), (6406, 100), (6406, 100), (64, 1)))})
+        with self.assertRaisesRegex(ValidationError, "黑电平分布"):
+            validate_burst(paths)
 
     def test_long_lens_wrong_model_and_linear_output_rejected(self):
         for changes in ({33437: (5, ((257, 100),)), 37386: (5, ((133, 10),))},

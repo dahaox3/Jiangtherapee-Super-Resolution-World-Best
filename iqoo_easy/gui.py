@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from . import __version__
 from .dng import BurstCalibration, ValidationError, validate_burst
 from .runner import Cancelled, RunResult, discover_engine, run_burst, validate_engine
 from .settings import load_settings, save_settings
@@ -105,7 +106,7 @@ class Application(ttk.Frame):
         self._configure_styles()
         self._build()
         self.pack(fill="both", expand=True)
-        self.root.title("JSR 主摄助手")
+        self.root.title(f"JSR 主摄助手 {__version__}")
         self.root.configure(background="#f5f4ef")
         self.root.protocol("WM_DELETE_WINDOW", self.request_close)
         self.root.bind("<Control-o>", lambda event: self.choose_files())
@@ -430,7 +431,11 @@ class Application(ttk.Frame):
                 calibration = self.calibration
                 self.state = "ready"
                 self.camera_var.set(f"1× 主摄  ·  ISO {calibration.iso}  ·  {_format_shutter(calibration.shutter_seconds)}  ·  七张设置一致")
-                self.parameters_var.set(f"照片噪声模型估算：读噪 {calibration.read_noise_dn:.3g} DN  ·  黑电平 {calibration.black_dn:g} DN  ·  有效满阱 {calibration.fullwell_e:.0f} e⁻")
+                parameters = f"照片噪声模型估算：读噪 {calibration.read_noise_dn:.3g} DN  ·  黑电平 {calibration.black_dn:g} DN  ·  有效满阱 {calibration.fullwell_e:.0f} e⁻"
+                if calibration.black_level_note:
+                    parameters += "\n" + calibration.black_level_note
+                    self.append_log(calibration.black_level_note)
+                self.parameters_var.set(parameters)
                 self._set_status("检查通过，可以开始合成。" if self.engine_var.get() else "照片检查通过，请在设置中选择合成引擎。")
             self._refresh_actions()
             return

@@ -24,6 +24,12 @@ class ValidationError(ValueError):
 
 PROVENANCE = "DNG NoiseProfile 元数据估算，非实测标定"
 
+# The stock developer interface takes one black level. Admit a mean only when
+# its error is <= 1/20 of a native DN AND <= 1/10 of modeled read noise. This is
+# a bounded approximation, not native per-CFA calibration or a blanket epsilon.
+MAX_BLACK_DEVIATION_DN = 0.05
+MAX_BLACK_DEVIATION_READ_NOISE = 0.1
+
 
 @dataclass(frozen=True)
 class FrameMetadata:
@@ -46,6 +52,7 @@ class FrameMetadata:
     fullwell_e: float
     file_size: int
     modified_ns: int
+    black_levels_dn: tuple[float, ...] = ()
     provenance: str = PROVENANCE
 
     @property
@@ -56,10 +63,16 @@ class FrameMetadata:
     def shutter(self) -> float:
         return self.shutter_seconds
 
+    @property
+    def black_level_max_error_dn(self) -> float:
+        return max((abs(value - self.black_dn) for value in self.black_levels_dn), default=0.0)
+
     def to_dict(self) -> dict:
         result = asdict(self)
         result["path"] = str(self.path)
         result["cfa_pattern"] = list(self.cfa_pattern)
+        result["black_levels_dn"] = list(self.black_levels_dn)
+        result["black_level_max_error_dn"] = self.black_level_max_error_dn
         return result
 
 
@@ -80,6 +93,13 @@ class BurstCalibration:
     def shutter(self) -> float:
         return self.shutter_seconds
 
+    @property
+    def black_level_note(self) -> str:
+        error = max(frame.black_level_max_error_dn for frame in self.frames)
+        if error <= 1e-12:
+            return ""
+        return f"黑电平采用通道均值近似，各通道最大偏差 {error:.4g} DN。"
+
     def to_dict(self) -> dict:
         return {
             "frames": [frame.to_dict() for frame in self.frames],
@@ -91,6 +111,7 @@ class BurstCalibration:
             "read_noise_dn": self.read_noise_dn,
             "fullwell_e": self.fullwell_e,
             "source_sha256": list(self.source_sha256),
+            "black_level_note": self.black_level_note,
             "provenance": self.provenance,
         }
 
@@ -102,7 +123,7 @@ _FORMATS = {1: "B", 3: "H", 4: "I", 6: "b", 7: "B", 8: "h",
             9: "i", 11: "f", 12: "d", 13: "I"}
 _TAGS = {254, 256, 257, 258, 262, 271, 272, 277, 330, 34665,
          33421, 33422, 33434, 33437, 34855, 34867, 37386,
-         50706, 50712, 50714, 50715, 50716, 50717, 50727, 50935, 51041}
+         50706, 50712, 50713, 50714, 50715, 50716, 50717, 50727, 50935, 51041}
 _MAX_IFDS = 64
 _MAX_ENTRIES = 4096
 _MAX_METADATA_VALUE = 1024 * 1024
@@ -306,9 +327,13 @@ def read_metadata(path: str | Path) -> FrameMetadata:
             raise ValidationError("DNG 声明已应用降噪，无法从噪声模型可靠估算电子数")
         if 50727 in inherited and any(v != 1 for v in _numbers(inherited[50727], "模拟平衡")):
             raise ValidationError("DNG 包含分通道增益，暂不能使用单组噪声参数")
-        black = _uniform(inherited.get(50714), "黑电平")
+        black_levels = tuple(float(v) for v in _numbers(inherited.get(50714), "黑电平"))
+        repeat = inherited.get(50713, (1, 1))
+        if (len(black_levels), repeat) not in ((1, (1, 1)), (4, (2, 2))):
+            raise ValidationError("黑电平排列不受支持；需要单个值或 2×2 Bayer 排列")
+        black = math.fsum(black_levels) / len(black_levels)
         white = _uniform(inherited.get(50717), "白电平")
-        if not 0 <= black < white <= (1 << bits) - 1:
+        if not 0 < white <= (1 << bits) - 1 or any(not 0 <= v < white for v in black_levels):
             raise ValidationError("黑白电平超出 RAW 编码范围")
         noise = _numbers(inherited.get(51041), "NoiseProfile 噪声模型（缺失时需提供匹配标定）")
         if len(noise) not in (2, 6):
@@ -321,9 +346,15 @@ def read_metadata(path: str | Path) -> FrameMetadata:
         read_noise = (white - black) * math.sqrt(offset)
         if not math.isfinite(fullwell) or not math.isfinite(read_noise):
             raise ValidationError("噪声模型换算结果不是有限数值")
+        black_error = max(abs(v - black) for v in black_levels)
+        if (black_error > MAX_BLACK_DEVIATION_DN + 1e-12 or
+                black_error > MAX_BLACK_DEVIATION_READ_NOISE * read_noise + 1e-12):
+            values = ", ".join(f"{v:g}" for v in black_levels)
+            raise ValidationError(f"各通道黑电平为 [{values}] DN，距均值最大偏差 {black_error:.4g} DN；"
+                                  "超出单组参数的微差适配范围，需要逐通道标定")
         return FrameMetadata(path, make, model, width, height, bits, cfa, iso, shutter,
                              f_number, focal, black, white, slope, offset, read_noise, fullwell,
-                             stamp.st_size, stamp.st_mtime_ns)
+                             stamp.st_size, stamp.st_mtime_ns, black_levels_dn=black_levels)
     except ValidationError as exc:
         raise ValidationError(f"{path.name}：{exc}") from exc
     except (OSError, struct.error, OverflowError) as exc:
@@ -342,10 +373,10 @@ def validate_burst(paths: Iterable[str | Path], *, expected_count: int = 7) -> B
         raise ValidationError("选中的文件路径重复，请选择 7 张不同的原片")
     frames = tuple(read_metadata(path) for path in paths)
     first = frames[0]
-    exact = ("make", "model", "width", "height", "bits_per_sample", "cfa_pattern", "iso")
+    exact = ("make", "model", "width", "height", "bits_per_sample", "cfa_pattern", "iso", "black_levels_dn")
     approximate = ("shutter_seconds", "f_number", "focal_length_mm", "black_dn", "white_dn", "noise_s", "noise_o")
     labels = {"iso": "ISO", "shutter_seconds": "快门", "f_number": "光圈", "focal_length_mm": "焦距",
-              "black_dn": "黑电平", "white_dn": "白电平", "noise_s": "噪声模型 S", "noise_o": "噪声模型 O"}
+              "black_dn": "黑电平", "black_levels_dn": "黑电平分布", "white_dn": "白电平", "noise_s": "噪声模型 S", "noise_o": "噪声模型 O"}
     for frame in frames[1:]:
         for key in exact:
             if getattr(frame, key) != getattr(first, key):
