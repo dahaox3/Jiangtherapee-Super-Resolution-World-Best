@@ -161,17 +161,21 @@ class DNGTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValidationError, "NoiseProfile|噪声模型"):
                 read_metadata(self.fixture(changes={51041: value}))
 
-    def test_heterogeneous_channel_model_rejected(self):
+    def test_heterogeneous_channel_model_maps_to_each_cfa_phase(self):
         noise = (SLOPE, OFFSET, SLOPE * 2, OFFSET, SLOPE, OFFSET)
-        with self.assertRaisesRegex(ValidationError, "各颜色通道"):
-            read_metadata(self.fixture(changes={51041: (12, noise)}))
+        m = read_metadata(self.fixture(changes={51041: (12, noise)}))
+        self.assertEqual(m.noise_slopes, (SLOPE, SLOPE * 2, SLOPE * 2, SLOPE))
+        blue_first = read_metadata(self.fixture(changes={51041: (12, (SLOPE, OFFSET, SLOPE * 2, OFFSET * 2, SLOPE * 3, OFFSET * 3)),
+                                                       33422: (1, (2, 1, 1, 0))}))
+        self.assertEqual(blue_first.noise_slopes, (SLOPE * 3, SLOPE * 2, SLOPE * 2, SLOPE))
+        self.assertEqual(blue_first.noise_offsets, (OFFSET * 3, OFFSET * 2, OFFSET * 2, OFFSET))
 
     def test_black_levels_must_agree_and_fit_range(self):
         for levels in (((64, 1), (65, 1)), ((1023, 1),), ((1024, 1),)):
             with self.subTest(levels=levels), self.assertRaises(ValidationError):
                 read_metadata(self.fixture(changes={50714: (5, levels)}))
 
-    def test_fractional_black_levels_use_bounded_mean_without_changing_input(self):
+    def test_fractional_black_levels_reach_engine_without_averaging(self):
         levels = ((6406, 100), (64, 1), (64, 1), (6406, 100))
         paths = self.batch(changes={50714: (5, levels)})
         before = [p.read_bytes() for p in paths]
@@ -180,20 +184,25 @@ class DNGTests(unittest.TestCase):
         self.assertEqual(c.frames[0].black_levels_dn, (64.06, 64, 64, 64.06))
         self.assertAlmostEqual(c.frames[0].black_level_max_error_dn, 0.03)
         self.assertAlmostEqual(c.read_noise_dn, (1023 - 64.03) * math.sqrt(OFFSET))
-        self.assertIn("均值近似", c.black_level_note)
-        self.assertIn("0.03", c.black_level_note)
+        self.assertIn("四个相位", c.black_level_note)
+        self.assertNotIn("均值近似", c.black_level_note)
+        payload = c.engine_payload()
+        self.assertEqual(payload["schema"], "JSR_CFA_CALIBRATION_V1")
+        self.assertEqual(payload["frames"][0]["black_levels_dn"], [64.06, 64, 64, 64.06])
+        self.assertEqual(payload["frames"][0]["sha256"], c.source_sha256[0])
         self.assertEqual(c.to_dict()["frames"][0]["black_levels_dn"], [64.06, 64, 64, 64.06])
         self.assertEqual(before, [p.read_bytes() for p in paths])
 
-    def test_black_approximation_requires_both_dn_and_noise_bounds(self):
+    def test_larger_phase_difference_and_low_noise_need_no_approximation(self):
         cases = (
             {50714: (5, ((6411, 100), (64, 1), (64, 1), (6411, 100)))},
             {50714: (5, ((6406, 100), (64, 1), (64, 1), (6406, 100))),
              51041: (12, (SLOPE, 1e-9) * 3)},
         )
         for changes in cases:
-            with self.subTest(changes=changes), self.assertRaisesRegex(ValidationError, "微差适配"):
-                read_metadata(self.fixture(changes=changes))
+            with self.subTest(changes=changes):
+                m = read_metadata(self.fixture(changes=changes))
+                self.assertNotEqual(m.cfa_black[0], m.cfa_black[1])
 
     def test_equal_black_scalar_and_invalid_repeat_geometry(self):
         m = read_metadata(self.fixture(changes={50713: None, 50714: (5, ((64, 1),))}))
@@ -203,11 +212,12 @@ class DNGTests(unittest.TestCase):
             with self.subTest(dimensions=dimensions), self.assertRaisesRegex(ValidationError, "排列"):
                 read_metadata(self.fixture(changes={50713: (3, dimensions)}))
 
-    def test_same_mean_but_different_black_pattern_is_rejected(self):
+    def test_each_frame_keeps_its_own_black_pattern(self):
         paths = self.batch(changes={50714: (5, ((6406, 100), (64, 1), (64, 1), (6406, 100)))})
         make_fixture(paths[4], changes={50714: (5, ((64, 1), (6406, 100), (6406, 100), (64, 1)))})
-        with self.assertRaisesRegex(ValidationError, "黑电平分布"):
-            validate_burst(paths)
+        result = validate_burst(paths).engine_payload()["frames"]
+        self.assertEqual(result[0]["black_levels_dn"], [64.06, 64, 64, 64.06])
+        self.assertEqual(result[4]["black_levels_dn"], [64, 64.06, 64.06, 64])
 
     def test_long_lens_wrong_model_and_linear_output_rejected(self):
         for changes in ({33437: (5, ((257, 100),)), 37386: (5, ((133, 10),))},
@@ -223,11 +233,12 @@ class DNGTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValidationError, "frame_4.dng"):
                     validate_burst(paths)
 
-    def test_mixed_noise_profile_rejected(self):
+    def test_each_frame_keeps_its_own_noise_profile(self):
         paths = self.batch()
         make_fixture(paths[2], changes={51041: (12, (SLOPE * 1.01, OFFSET) * 3)})
-        with self.assertRaisesRegex(ValidationError, "噪声模型"):
-            validate_burst(paths)
+        result = validate_burst(paths).engine_payload()["frames"]
+        self.assertEqual(result[0]["noise_s"], [SLOPE] * 4)
+        self.assertEqual(result[2]["noise_s"], [SLOPE * 1.01] * 4)
 
     def test_duplicate_paths_and_content_rejected(self):
         paths = self.batch()

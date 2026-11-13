@@ -1,4 +1,4 @@
-"""Read original iQOO DNG metadata and estimate JSR's scalar noise parameters.
+"""Read original iQOO DNG metadata for the engine's per-CFA noise interface.
 
 Only the Python standard library is used. Original files are opened read-only.
 NoiseProfile describes a normalized variance ``S*x + O``. For a linear,
@@ -24,13 +24,6 @@ class ValidationError(ValueError):
 
 PROVENANCE = "DNG NoiseProfile 元数据估算，非实测标定"
 
-# The stock developer interface takes one black level. Admit a mean only when
-# its error is <= 1/20 of a native DN AND <= 1/10 of modeled read noise. This is
-# a bounded approximation, not native per-CFA calibration or a blanket epsilon.
-MAX_BLACK_DEVIATION_DN = 0.05
-MAX_BLACK_DEVIATION_READ_NOISE = 0.1
-
-
 @dataclass(frozen=True)
 class FrameMetadata:
     path: Path
@@ -53,6 +46,8 @@ class FrameMetadata:
     file_size: int
     modified_ns: int
     black_levels_dn: tuple[float, ...] = ()
+    noise_slopes: tuple[float, ...] = ()
+    noise_offsets: tuple[float, ...] = ()
     provenance: str = PROVENANCE
 
     @property
@@ -67,11 +62,30 @@ class FrameMetadata:
     def black_level_max_error_dn(self) -> float:
         return max((abs(value - self.black_dn) for value in self.black_levels_dn), default=0.0)
 
+    @property
+    def cfa_black(self) -> tuple[float, ...]:
+        return self.black_levels_dn * 4 if len(self.black_levels_dn) == 1 else self.black_levels_dn
+
+    @property
+    def cfa_read_noise_dn(self) -> tuple[float, ...]:
+        return tuple((self.white_dn - b) * math.sqrt(o) for b, o in zip(self.cfa_black, self.noise_offsets))
+
+    def engine_payload(self, digest: str) -> dict:
+        return {"source": str(self.path), "sha256": digest,
+                "width": self.width, "height": self.height,
+                "cfa_pattern": list(self.cfa_pattern),
+                "black_levels_dn": list(self.cfa_black),
+                "white_levels_dn": [self.white_dn] * 4,
+                "noise_s": list(self.noise_slopes), "noise_o": list(self.noise_offsets),
+                "iso": self.iso, "shutter_seconds": self.shutter_seconds}
+
     def to_dict(self) -> dict:
         result = asdict(self)
         result["path"] = str(self.path)
         result["cfa_pattern"] = list(self.cfa_pattern)
         result["black_levels_dn"] = list(self.black_levels_dn)
+        result["noise_slopes"] = list(self.noise_slopes)
+        result["noise_offsets"] = list(self.noise_offsets)
         result["black_level_max_error_dn"] = self.black_level_max_error_dn
         return result
 
@@ -95,10 +109,22 @@ class BurstCalibration:
 
     @property
     def black_level_note(self) -> str:
-        error = max(frame.black_level_max_error_dn for frame in self.frames)
-        if error <= 1e-12:
-            return ""
-        return f"黑电平采用通道均值近似，各通道最大偏差 {error:.4g} DN。"
+        values = ", ".join(f"{v:g}" for v in self.reference.cfa_black)
+        return f"参考帧黑电平 [{values}] DN；每张照片按各自四个相位标定。"
+
+    @property
+    def parameter_summary(self) -> str:
+        def span(values):
+            low, high = min(values), max(values)
+            return f"{low:.4g}" if math.isclose(low, high, rel_tol=1e-6) else f"{low:.4g}–{high:.4g}"
+        noises = [v for frame in self.frames for v in frame.cfa_read_noise_dn]
+        wells = [1 / s for frame in self.frames for s in frame.noise_slopes]
+        return (f"照片噪声模型估算：读噪 {span(noises)} DN  ·  有效满阱 {span(wells)} e⁻\n"
+                + self.black_level_note)
+
+    def engine_payload(self) -> dict:
+        return {"schema": "JSR_CFA_CALIBRATION_V1",
+                "frames": [f.engine_payload(digest) for f, digest in zip(self.frames, self.source_sha256)]}
 
     def to_dict(self) -> dict:
         return {
@@ -312,7 +338,7 @@ def read_metadata(path: str | Path) -> FrameMetadata:
         if inherited.get(33421) != (2, 2):
             raise ValidationError("原片需要 2×2 Bayer 色彩排列")
         cfa = tuple(_numbers(inherited.get(33422), "CFA 排列"))
-        if len(cfa) != 4 or sorted(cfa) != [0, 1, 1, 2]:
+        if len(cfa) != 4 or sorted(cfa) != [0, 1, 1, 2] or cfa.index(0) ^ cfa.index(2) != 3:
             raise ValidationError("原片 CFA 排列不是受支持的 Bayer 模式")
         iso = _integer(capture.get(34855, capture.get(34867)), "ISO")
         shutter = float(_scalar(capture.get(33434), "快门时间"))
@@ -322,7 +348,7 @@ def read_metadata(path: str | Path) -> FrameMetadata:
             raise ValidationError("DNG 包含线性化查找表，暂不能可靠换算三参数")
         for delta in (50715, 50716):
             if delta in inherited and any(v != 0 for v in _numbers(inherited[delta], "黑电平修正")):
-                raise ValidationError("DNG 包含空间变化的黑电平，暂不能使用单个黑电平值")
+                raise ValidationError("DNG 包含逐行或逐列变化的黑电平，当前四相位接口不支持")
         if 50935 in inherited and _scalar(inherited[50935], "已应用降噪") > 0:
             raise ValidationError("DNG 声明已应用降噪，无法从噪声模型可靠估算电子数")
         if 50727 in inherited and any(v != 1 for v in _numbers(inherited[50727], "模拟平衡")):
@@ -333,28 +359,27 @@ def read_metadata(path: str | Path) -> FrameMetadata:
             raise ValidationError("黑电平排列不受支持；需要单个值或 2×2 Bayer 排列")
         black = math.fsum(black_levels) / len(black_levels)
         white = _uniform(inherited.get(50717), "白电平")
-        if not 0 < white <= (1 << bits) - 1 or any(not 0 <= v < white for v in black_levels):
+        if not 0 < white <= (1 << bits) - 1 or any(not 0 <= v < white - 5 for v in black_levels):
             raise ValidationError("黑白电平超出 RAW 编码范围")
         noise = _numbers(inherited.get(51041), "NoiseProfile 噪声模型（缺失时需提供匹配标定）")
         if len(noise) not in (2, 6):
             raise ValidationError("NoiseProfile 的通道数量不受支持")
-        slope = _uniform(tuple(noise[0::2]), "噪声模型 S")
-        offset = _uniform(tuple(noise[1::2]), "噪声模型 O")
-        if not 0 < slope <= 1 or not 0 <= offset < 1:
+        slopes = tuple(float(noise[0 if len(noise) == 2 else int(color) * 2]) for color in cfa)
+        offsets = tuple(float(noise[1 if len(noise) == 2 else int(color) * 2 + 1]) for color in cfa)
+        if any(not 0 < s <= 1 for s in slopes) or any(not 0 <= o < 1 for o in offsets):
             raise ValidationError("NoiseProfile 系数超出有效范围")
-        fullwell = 1 / slope
-        read_noise = (white - black) * math.sqrt(offset)
+        # These summaries feed the original parser's scalar placeholders only.
+        # The reconstruction receives every original per-phase coefficient.
+        slope, offset = math.fsum(slopes) / 4, math.fsum(offsets) / 4
+        cfa_black = black_levels * 4 if len(black_levels) == 1 else black_levels
+        fullwell = math.fsum(1 / s for s in slopes) / 4
+        read_noise = math.fsum((white - b) * math.sqrt(o) for b, o in zip(cfa_black, offsets)) / 4
         if not math.isfinite(fullwell) or not math.isfinite(read_noise):
             raise ValidationError("噪声模型换算结果不是有限数值")
-        black_error = max(abs(v - black) for v in black_levels)
-        if (black_error > MAX_BLACK_DEVIATION_DN + 1e-12 or
-                black_error > MAX_BLACK_DEVIATION_READ_NOISE * read_noise + 1e-12):
-            values = ", ".join(f"{v:g}" for v in black_levels)
-            raise ValidationError(f"各通道黑电平为 [{values}] DN，距均值最大偏差 {black_error:.4g} DN；"
-                                  "超出单组参数的微差适配范围，需要逐通道标定")
         return FrameMetadata(path, make, model, width, height, bits, cfa, iso, shutter,
                              f_number, focal, black, white, slope, offset, read_noise, fullwell,
-                             stamp.st_size, stamp.st_mtime_ns, black_levels_dn=black_levels)
+                             stamp.st_size, stamp.st_mtime_ns, black_levels_dn=black_levels,
+                             noise_slopes=slopes, noise_offsets=offsets)
     except ValidationError as exc:
         raise ValidationError(f"{path.name}：{exc}") from exc
     except (OSError, struct.error, OverflowError) as exc:
@@ -373,8 +398,8 @@ def validate_burst(paths: Iterable[str | Path], *, expected_count: int = 7) -> B
         raise ValidationError("选中的文件路径重复，请选择 7 张不同的原片")
     frames = tuple(read_metadata(path) for path in paths)
     first = frames[0]
-    exact = ("make", "model", "width", "height", "bits_per_sample", "cfa_pattern", "iso", "black_levels_dn")
-    approximate = ("shutter_seconds", "f_number", "focal_length_mm", "black_dn", "white_dn", "noise_s", "noise_o")
+    exact = ("make", "model", "width", "height", "bits_per_sample", "cfa_pattern", "iso")
+    approximate = ("shutter_seconds", "f_number", "focal_length_mm")
     labels = {"iso": "ISO", "shutter_seconds": "快门", "f_number": "光圈", "focal_length_mm": "焦距",
               "black_dn": "黑电平", "black_levels_dn": "黑电平分布", "white_dn": "白电平", "noise_s": "噪声模型 S", "noise_o": "噪声模型 O"}
     for frame in frames[1:]:
@@ -383,7 +408,7 @@ def validate_burst(paths: Iterable[str | Path], *, expected_count: int = 7) -> B
                 raise ValidationError(f"{frame.name} 的{labels.get(key, '相机/RAW 模式')}与 {first.name} 不同；请锁定 1×、ISO 和快门后重新选择")
         for key in approximate:
             if not math.isclose(getattr(frame, key), getattr(first, key), rel_tol=1e-6, abs_tol=1e-12):
-                raise ValidationError(f"{frame.name} 的{labels[key]}与 {first.name} 不同；不能给这组照片套用一组三参数")
+                raise ValidationError(f"{frame.name} 的{labels[key]}与 {first.name} 不同；请选择同一曝光设置的七张原片")
     digests = []
     for frame in frames:
         try:

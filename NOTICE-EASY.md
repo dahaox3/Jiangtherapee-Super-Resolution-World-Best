@@ -1,12 +1,13 @@
 # JSR 主摄助手：组件说明
 
-本 fork 的主摄助手是独立编写的启动界面和 DNG 参数读取工具。
-新增的 iqoo_easy/、tests/、launch_iqoo.py、build-windows.ps1 及相关说明采用 iqoo_easy/LICENSE 中的 MIT 许可。
+本 fork 的主摄助手是独立编写的启动界面、DNG 参数读取工具和运行时适配代码。
+新增的 iqoo_easy/、engine_patch/、tests/、launch_iqoo.py、build-windows.ps1、prepare-engine.ps1 及相关说明采用 iqoo_easy/LICENSE 中的 MIT 许可。
 该许可不适用于继承的上游源码、模型、图片或官方二进制文件。
 
 超分辨率算法与模型来自姜尧耕的
 [Jiangtherapee Super Resolution](https://github.com/y-g-jiang/Jiangtherapee-Super-Resolution-World-Best)。
-主摄助手的下载包不包含或重新授权官方引擎；用户需单独下载并完整解压官方 JSR V18.3.1。
+主摄助手的下载包不包含或重新授权官方引擎；引擎补丁在用户本机从已持有且 SHA-256 匹配的官方 JSR V18.3.1 构建。
+引擎入口会加载本 fork 新增的逐通道标定与显示适配器；原模型、运行库和其余归档成员保持原样。
 官方引擎及其依赖的声明见官方包中的 THIRD_PARTY_NOTICES.md 和 resources/licenses。
 
 主摄助手运行时使用 Python 与 Tcl/Tk，打包工具为 PyInstaller。

@@ -23,6 +23,8 @@ try {
     }
     & $python -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements-build.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install build tools' }
+    & $python -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'requirements-test.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to install test tools' }
     Push-Location $PSScriptRoot
     try {
         & $python -m unittest discover -s tests -v
@@ -33,6 +35,14 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'EASY-START.md') -Destination (Join-Path $bundle 'README.md')
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'iqoo_easy\LICENSE') -Destination (Join-Path $bundle 'LICENSE-frontend.txt')
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NOTICE-EASY.md') -Destination $bundle
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ENGINE-PATCH.md') -Destination $bundle
+        $patchSource = Join-Path $bundle 'engine-patch-source'
+        New-Item -ItemType Directory -Path (Join-Path $patchSource 'engine_patch'), (Join-Path $patchSource 'iqoo_easy') -Force | Out-Null
+        foreach ($source in (Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'engine_patch') -Filter '*.py' -File)) {
+            Copy-Item -LiteralPath $source.FullName -Destination (Join-Path $patchSource 'engine_patch')
+        }
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'iqoo_easy\runner.py') -Destination (Join-Path $patchSource 'iqoo_easy')
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'prepare-engine.ps1') -Destination $patchSource
         $basePython = & $python -c 'import sys; print(sys.base_prefix)'
         $pythonLicense = Join-Path $basePython 'LICENSE.txt'
         if (Test-Path -LiteralPath $pythonLicense) { Copy-Item -LiteralPath $pythonLicense -Destination (Join-Path $bundle 'LICENSE-Python.txt') }

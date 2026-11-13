@@ -27,6 +27,11 @@ class Calibration:
     black_dn: float = 64.0
     fullwell_e: float = 2368.3461
 
+    def engine_payload(self):
+        return {"schema": "JSR_CFA_CALIBRATION_V1", "frames": [
+            {"source": str(f.path), "black_levels_dn": [64.06, 64, 64, 64.06]}
+            for f in self.frames]}
+
     def to_dict(self):
         return {
             "paths": [str(frame.path) for frame in self.frames],
@@ -141,6 +146,7 @@ class RunnerTests(unittest.TestCase):
             self.assertAlmostEqual(float(command[command.index(flag) + 1]), value, places=7)
         self.assertIn("--developer-mode", command)
         self.assertIn("--confirm-equal-exposure", command)
+        self.assertEqual(command[command.index("--iqoo-calibration") + 1], str(self.output / "calibration-cfa.json"))
         self.assertEqual(command[command.index("--camera-profile-source") + 1], "embedded-dng")
         self.assertNotIn("--ptc-proxy", command)
         self.assertNotIn("--dark-frame", command)
@@ -158,6 +164,8 @@ class RunnerTests(unittest.TestCase):
         receipt = json.loads((first.job_dir / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["output_sha256"], runner.sha256(first.output_file))
         self.assertEqual(receipt["calibration"], self.calibration.to_dict())
+        self.assertEqual(json.loads((first.job_dir / "calibration-cfa.json").read_text(encoding="utf-8")),
+                         self.calibration.engine_payload())
         self.assertEqual(self.events[-1], ("complete", str(second.output_file)))
         self.assertEqual(list((self.data / "temp").iterdir()), [])
 

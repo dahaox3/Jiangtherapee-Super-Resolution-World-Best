@@ -1,7 +1,7 @@
 # JSR 主摄助手
 
 给 iQOO 12 Pro（V2329A）1× 主摄增加简单的七张合成入口。
-每批照片自动读取 ISO、快门和 DNG NoiseProfile，再计算并传给 JSR 三参数。
+每批照片自动读取 ISO、快门和 DNG NoiseProfile，在修正版 JSR 引擎中逐通道标定。
 **只要求同一组七张的 ISO 和快门相同；不同组可以使用不同的 ISO、快门。**
 
 ## 日常使用
@@ -12,10 +12,11 @@
 
 无需选择 PTC、填写三个数字或逐次确认等曝光。参数每批重新读取；没有写死 ISO 400、1/50 秒或某组标定数值。
 如果照片混入另一档 ISO、快门、长焦镜头，或缺少噪声模型，程序会指出具体文件与原因。
-噪声模型及七张照片的黑电平分布必须一致，避免把一组标定错误应用到不同模式。
-v0.1.1 支持黑电平的微小通道差异，例如 `[64.06,64,64,64.06]`。
-由于官方手动接口只接受一个黑电平，助手使用通道均值近似；每个通道距均值必须同时不超过 0.05 DN 和估算读噪的 10%。
-界面说明近似的最大偏差，`job.json` 保留每张的原始黑电平数组和偏差；超过范围仍会拒绝。
+v0.2.0 将每张原片的四个黑电平和 NoiseProfile 分别传给原版引擎内部。
+例如 `[64.06,64,64,64.06]` 会保留全部数值，不再取均值替代；同一组中各帧的黑电平、噪声模型也可以不同。
+`calibration-cfa.json` 保留提交值，`CFA_CALIBRATION.json` 记录引擎实际使用的四相位参数。
+取消了默认额外 +2 EV，DNG 缩略图与 PNG/JPEG 导出共用白平衡、颜色与显示处理。
+Photoshop/Camera Raw 仍可能应用自身配置文件、曲线或已保存的编辑设置。
 
 默认输出在照片文件夹的 `JSR_Easy_Output` 下，每次合成创建独立目录。
 也可以改成 D 盘目录，程序会记住上次路径。每次输出带 `job.json` 和 `engine.log`，便于查明参数与失败原因。
@@ -24,7 +25,7 @@ v0.1.1 支持黑电平的微小通道差异，例如 `[64.06,64,64,64.06]`。
 
 ## 安装便携版
 
-使用已经保留的官方 JSR V18.3.1 便携版，完整解压并保留 resources 文件夹。
+使用已经保留的官方 JSR V18.3.1 便携版，完整解压并保留 resources 文件夹，再安装本 fork 的引擎补丁。
 注意：[官方 18.3.1 发布页](https://github.com/y-g-jiang/Jiangtherapee-Super-Resolution-World-Best/releases/tag/jsr-v18.3.1) 的同名下载附件现已被作者替换为 18.2.1；文件名不能证明引擎版本，助手会校验实际 SHA-256。
 将本 fork 的 `JSR-Easy` 文件夹放在它旁边，例如：
 
@@ -34,9 +35,10 @@ D:\camera_super_resolution\
   JSR-Easy\JSR-Easy.exe
 ```
 
-助手会自动找到旁边的引擎；不在旁边时，展开“合成引擎设置”选择官方包的 `resources/jsr_backend.exe`。
-当前只验证并接受 JSR V18.3.1 内对应 SHA-256 的七张引擎。不同版本需重新验证接口。
-已验证引擎 SHA-256：`45b520c43037a7e5033a6e08f97bb4972413440462eea5280986a7237f889729`。
+助手会自动找到旁边的引擎；不在旁边时，展开“合成引擎设置”选择打过补丁的 `resources/jsr_backend.exe`。
+v0.2.0 只接受对应修正版的校验值，原版或其他版本会被拒绝，防止逐通道参数被忽略。
+补丁的原版输入 SHA-256：`45b520c43037a7e5033a6e08f97bb4972413440462eea5280986a7237f889729`。
+修正版校验值固定在 `iqoo_easy/runner.py`。补丁不会覆盖备份或修改原片，安装方法见 [ENGINE-PATCH.md](ENGINE-PATCH.md)。
 便携包自带助手需要的 Python/Tk 运行时；不需要另外安装 Python、CUDA 或 pip 依赖。
 
 ## 参数来源和范围
@@ -46,9 +48,10 @@ D:\camera_super_resolution\
 这些是手机写入的噪声模型估计，不是独立测量的物理满阱。文件缺少或存在无法可靠处理的模型时不会猜值。
 标准依据：[Android Camera2 NoiseProfile](https://developer.android.com/reference/android/hardware/camera2/CaptureResult#SENSOR_NOISE_PROFILE)、[Adobe DNG 规范](https://helpx.adobe.com/camera-raw/desktop/dng-and-file-formats/digital-negative.html)。
 
-仍使用官方七张 WGPU 引擎，默认输出 2× 线性 RGB DNG，适合静态场景；不启用额外去鬼影。
-默认曝光标签、色彩处理和重建算法沿用该引擎。界面自动化不等于提升传感器标定精度。
-完整 Windows 界面和当前后端的源码未在上游仓库公开，因此本 fork 新增独立入口调用原引擎，没有重建完整 JSR 源码。
+仍使用官方七张 WGPU 重建与模型，默认输出 2× 线性 RGB DNG，适合静态场景；不启用额外去鬼影。
+标定在融合前完成，输出使用原生无损 DNG 写入器，不在导出后再转码或重写像素。
+完整 Windows 界面和当前后端源码未公开，因此补丁在原包内部加载可审查的适配器；没有替换重建模型或冒充完整上游源码。
+手机元数据提供的噪声模型仍是估计值，自动读取不等于重新实测传感器。
 
 ## 从源码运行与构建
 
@@ -56,6 +59,7 @@ D:\camera_super_resolution\
 
 ```powershell
 py -3.12 -m iqoo_easy
+py -3.12 -m pip install -r requirements-test.txt
 py -3.12 -m unittest discover -s tests -v
 ```
 
@@ -74,6 +78,6 @@ py -3.12 -m unittest discover -s tests -v
 开发者也可以使用 `python -m iqoo_easy inspect <七个 DNG 路径> --report check.json`。
 批处理使用 `python -m iqoo_easy run <七个 DNG 路径> --output-dir <输出目录> --report result.json`。
 窗口版 EXE 支持同样参数，配合 `--report` 读取结果。
-测试使用合成元数据与假的子进程引擎，不在仓库内保存个人照片。
+自动测试使用合成元数据、数值样本与假的子进程引擎；另用本机原片和实际 GPU 验证完整处理，不在仓库内保存个人照片。
 
 作者和组件许可见 [NOTICE-EASY.md](NOTICE-EASY.md)。

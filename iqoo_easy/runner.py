@@ -24,8 +24,9 @@ import uuid
 
 from .dng import BurstCalibration, ValidationError, validate_burst
 from .settings import application_root, data_root, write_json
+from . import __version__
 
-BACKEND_SHA256 = "45b520c43037a7e5033a6e08f97bb4972413440462eea5280986a7237f889729"
+BACKEND_SHA256 = "0b61d2d5af301fd1389952e0f8234e773ac27b468de648ba34709ff09923aed1"
 EventCallback = Callable[[str, object], None]
 
 
@@ -62,9 +63,9 @@ def validate_engine(path: Path) -> Path:
     if path.is_dir():
         path = path / "resources" / "jsr_backend.exe"
     if path.name.lower() != "jsr_backend.exe" or not path.is_file():
-        raise ValidationError("请选择官方 JSR_V18.3.1 文件夹里的 resources/jsr_backend.exe。")
+        raise ValidationError("请选择已安装逐通道补丁的 resources/jsr_backend.exe。")
     if sha256(path) != BACKEND_SHA256:
-        raise ValidationError("此引擎版本尚未验证。请使用官方 JSR_V18.3.1 便携包中的 jsr_backend.exe。")
+        raise ValidationError("引擎与助手版本不匹配。请使用 v0.2.0 对应的逐通道修正版引擎，不能直接使用原版或其他版本。")
     return path
 
 
@@ -74,6 +75,7 @@ def build_command(calibration: BurstCalibration, engine: Path, job_dir: Path,
     for frame in calibration.frames:
         argv += ["--raw-frame", str(frame.path)]
     argv += [
+        "--iqoo-calibration", str(job_dir / "calibration-cfa.json"),
         "--developer-mode", "--read-noise-dn", format(calibration.read_noise_dn, ".12g"),
         "--black-level-dn", format(calibration.black_dn, ".12g"),
         "--full-well-electrons", format(calibration.fullwell_e, ".12g"),
@@ -173,7 +175,10 @@ def _progress(line: str, emit: EventCallback) -> None:
     if match:
         # 100 from the engine precedes final file checks; reserve completion for us.
         emit("progress", min(99.0, float(match[1])))
-        emit("status", match[2])
+        message = match[2]
+        if float(match[1]) == 2.0 and "PTC" in message:
+            message = "解码七张 RAW，应用逐通道标定"
+        emit("status", message)
 
 
 def run_burst(calibration: BurstCalibration, engine: Path, output_root: Path, *,
@@ -202,11 +207,13 @@ def run_burst(calibration: BurstCalibration, engine: Path, output_root: Path, *,
         log_path = job_dir / "engine.log"
         prefix = "JSR_1x_" + job_id
         command = build_command(fresh, engine, job_dir, prefix)
+        write_json(job_dir / "calibration-cfa.json", fresh.engine_payload())
         receipt = {
-            "app_version": "0.1.0", "status": "running",
+            "app_version": __version__, "status": "running",
             "backend_sha256": BACKEND_SHA256,
             "calibration": fresh.to_dict(), "command": command,
             "note": "NoiseProfile metadata estimates, not an independent PTC measurement",
+            "engine_policy": "exact per-CFA calibration; no extra +2 EV; native lossless export",
         }
         write_json(job_dir / "job.json", receipt)
         env = os.environ.copy()

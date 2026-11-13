@@ -98,7 +98,7 @@ class Application(ttk.Frame):
 
         self.count_var = tk.StringVar(value="尚未选择照片")
         self.camera_var = tk.StringVar(value="只需选择同一场景的 7 张原始 DNG")
-        self.parameters_var = tk.StringVar(value="读噪、黑电平和有效满阱会从照片自动读取或估算。")
+        self.parameters_var = tk.StringVar(value="每张照片的黑电平与噪声参数自动读取，按颜色通道标定。")
         self.status_var = tk.StringVar(value="请先选择照片。")
         self.engine_status_var = tk.StringVar(value="合成引擎：已找到" if engine else "合成引擎：需要选择")
         self.result_var = tk.StringVar(value="")
@@ -431,11 +431,8 @@ class Application(ttk.Frame):
                 calibration = self.calibration
                 self.state = "ready"
                 self.camera_var.set(f"1× 主摄  ·  ISO {calibration.iso}  ·  {_format_shutter(calibration.shutter_seconds)}  ·  七张设置一致")
-                parameters = f"照片噪声模型估算：读噪 {calibration.read_noise_dn:.3g} DN  ·  黑电平 {calibration.black_dn:g} DN  ·  有效满阱 {calibration.fullwell_e:.0f} e⁻"
-                if calibration.black_level_note:
-                    parameters += "\n" + calibration.black_level_note
-                    self.append_log(calibration.black_level_note)
-                self.parameters_var.set(parameters)
+                self.parameters_var.set(calibration.parameter_summary)
+                self.append_log(calibration.black_level_note)
                 self._set_status("检查通过，可以开始合成。" if self.engine_var.get() else "照片检查通过，请在设置中选择合成引擎。")
             self._refresh_actions()
             return
